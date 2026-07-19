@@ -943,6 +943,14 @@ func (fw *FileWriter) CreateDataset(name string, dtype Datatype, dims []uint64, 
 		return fw.createChunkedDataset(name, dtype, dims, config)
 	}
 
+	// HDF5 spec: filters (compression, shuffle) require chunked layout
+	if config.pipeline != nil && !config.pipeline.IsEmpty() {
+		return nil, fmt.Errorf("filters require chunked layout (use WithChunkDims)")
+	}
+	if config.enableShuffle {
+		return nil, fmt.Errorf("shuffle filter requires chunked layout (use WithChunkDims)")
+	}
+
 	// Get datatype info
 	dtInfo, err := getDatatypeInfo(dtype, config)
 	if err != nil {

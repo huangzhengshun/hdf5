@@ -37,7 +37,7 @@ func TestParseFilterPipelineMessage(t *testing.T) {
 		},
 		{
 			name:         "version 2 empty pipeline",
-			data:         []byte{0x02, 0x00},
+			data:         []byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
 			wantVersion:  2,
 			wantNumFilts: 0,
 			wantErr:      false,
@@ -45,15 +45,19 @@ func TestParseFilterPipelineMessage(t *testing.T) {
 		{
 			name: "version 2 single deflate filter",
 			data: func() []byte {
-				d := make([]byte, 2+8)                                       // header + filter
-				d[0] = 2                                                     // version 2
-				d[1] = 1                                                     // 1 filter
-				binary.LittleEndian.PutUint16(d[2:4], uint16(FilterDeflate)) // filter ID
-				// Name length skipped in v2
-				binary.LittleEndian.PutUint16(d[4:6], 0)  // flags
-				binary.LittleEndian.PutUint16(d[6:8], 0)  // num client data
-				binary.LittleEndian.PutUint16(d[8:10], 0) // padding
-				return d[:10]
+				d := make([]byte, 2+6+8) // header + reserved + filter
+				d[0] = 2                 // version 2
+				d[1] = 1                 // 1 filter
+				// Reserved 6 bytes [2:8]
+				offset := 8
+				binary.LittleEndian.PutUint16(d[offset:offset+2], uint16(FilterDeflate)) // filter ID
+				offset += 2
+				binary.LittleEndian.PutUint16(d[offset:offset+2], 0) // name length = 0
+				offset += 2
+				binary.LittleEndian.PutUint16(d[offset:offset+2], 0) // flags
+				offset += 2
+				binary.LittleEndian.PutUint16(d[offset:offset+2], 0) // num client data
+				return d
 			}(),
 			wantVersion:  2,
 			wantNumFilts: 1,
@@ -99,13 +103,16 @@ func TestParseFilterPipelineMessage(t *testing.T) {
 		{
 			name: "version 2 filter with client data",
 			data: func() []byte {
-				// Header: 2 bytes
-				// Filter: ID(2) + flags(2) + numClient(2) + clientData(2*4) = 14
-				d := make([]byte, 16)
+				// Header: 8 bytes (2 + 6 reserved)
+				// Filter: ID(2) + nameLen(2) + flags(2) + numClient(2) + clientData(2*4) = 16
+				d := make([]byte, 8+16)
 				d[0] = 2 // version 2
 				d[1] = 1 // 1 filter
-				offset := 2
+				// Reserved 6 bytes [2:8]
+				offset := 8
 				binary.LittleEndian.PutUint16(d[offset:offset+2], uint16(FilterDeflate)) // filter ID
+				offset += 2
+				binary.LittleEndian.PutUint16(d[offset:offset+2], 0) // name length = 0
 				offset += 2
 				binary.LittleEndian.PutUint16(d[offset:offset+2], 0x01) // flags
 				offset += 2
@@ -157,11 +164,14 @@ func TestParseFilterPipelineMessage(t *testing.T) {
 // TestParseFilterPipelineMessage_FilterDetails tests filter details parsing.
 func TestParseFilterPipelineMessage_FilterDetails(t *testing.T) {
 	// Version 2 with deflate filter and client data
-	data := make([]byte, 16)
-	data[0] = 2 // version 2
-	data[1] = 1 // 1 filter
-	offset := 2
+	data := make([]byte, 8+8+8) // header(8) + filter header(8) + client data(8)
+	data[0] = 2                 // version 2
+	data[1] = 1                 // 1 filter
+	// Reserved 6 bytes [2:8]
+	offset := 8
 	binary.LittleEndian.PutUint16(data[offset:offset+2], uint16(FilterDeflate))
+	offset += 2
+	binary.LittleEndian.PutUint16(data[offset:offset+2], 0) // name length = 0
 	offset += 2
 	binary.LittleEndian.PutUint16(data[offset:offset+2], 0x0F) // flags
 	offset += 2

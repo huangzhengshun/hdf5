@@ -252,7 +252,7 @@ func TestFilterPipeline_EncodePipelineMessage_SingleFilter(t *testing.T) {
 	require.Equal(t, uint16(FilterGZIP), filterID)
 
 	nameLen := binary.LittleEndian.Uint16(msg[offset+2:])
-	require.Equal(t, uint16(0), nameLen) // No name stored
+	require.Equal(t, uint16(7), nameLen) // Name "deflate" is 7 bytes
 
 	flags := binary.LittleEndian.Uint16(msg[offset+4:])
 	require.Equal(t, uint16(0), flags)
@@ -260,8 +260,13 @@ func TestFilterPipeline_EncodePipelineMessage_SingleFilter(t *testing.T) {
 	numCD := binary.LittleEndian.Uint16(msg[offset+6:])
 	require.Equal(t, uint16(1), numCD)
 
-	// CD value (after filter header, padded to 8 bytes)
-	cdValue := binary.LittleEndian.Uint32(msg[offset+8:])
+	// Name (padded to 8 bytes)
+	name := string(msg[offset+8 : offset+8+7])
+	require.Equal(t, "deflate", name)
+
+	// CD value (after name, padded to 8-byte boundary)
+	cdOffset := offset + 8 + 8 // header + padded name (8 bytes)
+	cdValue := binary.LittleEndian.Uint32(msg[cdOffset:])
 	require.Equal(t, uint32(6), cdValue)
 }
 
@@ -290,8 +295,8 @@ func TestFilterPipeline_EncodePipelineMessage_MultipleFilters(t *testing.T) {
 	require.Equal(t, byte(2), msg[1]) // 2 filters
 
 	// Verify message is valid length
-	// Header (8) + Filter1 (8 + 8 (padded CD)) + Filter2 (8 + 8 (padded CD)) = 40
-	require.Equal(t, 40, len(msg))
+	// Header (8) + Filter1 (8 + 8 (padded name) + 8 (padded CD)) + Filter2 (8 + 8 + 8) = 56
+	require.Equal(t, 56, len(msg))
 
 	// Verify both filters are present in message
 	offset := 8
@@ -300,14 +305,14 @@ func TestFilterPipeline_EncodePipelineMessage_MultipleFilters(t *testing.T) {
 	filterID1 := binary.LittleEndian.Uint16(msg[offset:])
 	require.Equal(t, uint16(FilterShuffle), filterID1)
 	nameLen1 := binary.LittleEndian.Uint16(msg[offset+2:])
-	require.Equal(t, uint16(0), nameLen1) // No name
+	require.Equal(t, uint16(7), nameLen1) // Name "shuffle" is 7 bytes
 
-	// Second filter (offset = 8 + 16 = 24)
-	offset2 := 24
+	// Second filter (offset = 8 + 24 = 32)
+	offset2 := 32
 	filterID2 := binary.LittleEndian.Uint16(msg[offset2:])
 	require.Equal(t, uint16(FilterGZIP), filterID2)
 	nameLen2 := binary.LittleEndian.Uint16(msg[offset2+2:])
-	require.Equal(t, uint16(0), nameLen2) // No name
+	require.Equal(t, uint16(7), nameLen2) // Name "deflate" is 7 bytes
 }
 
 func TestFilterPipeline_EncodePipelineMessage_NoName(t *testing.T) {
@@ -357,13 +362,17 @@ func TestFilterPipeline_EncodePipelineMessage_LongName(t *testing.T) {
 
 	offset := 8
 	nameLen := binary.LittleEndian.Uint16(msg[offset+2:])
-	require.Equal(t, uint16(0), nameLen) // No name stored
+	require.Equal(t, uint16(21), nameLen) // Name "very-long-filter-name" is 21 bytes
 
 	flags := binary.LittleEndian.Uint16(msg[offset+4:])
 	require.Equal(t, uint16(42), flags)
 
-	// CD values start at offset+8 (3 values = 12 bytes, padded to 16)
-	cdOffset := offset + 8
+	// Name (padded to 24 bytes)
+	name := string(msg[offset+8 : offset+8+21])
+	require.Equal(t, "very-long-filter-name", name)
+
+	// CD values start after name (padded to 24 bytes)
+	cdOffset := offset + 8 + 24 // header + padded name (24 bytes)
 	cd1 := binary.LittleEndian.Uint32(msg[cdOffset:])
 	cd2 := binary.LittleEndian.Uint32(msg[cdOffset+4:])
 	cd3 := binary.LittleEndian.Uint32(msg[cdOffset+8:])

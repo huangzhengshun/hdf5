@@ -1,4 +1,4 @@
-﻿package hdf5
+package hdf5
 
 import (
 	"encoding/binary"
@@ -8,6 +8,21 @@ import (
 	"github.com/huangzhengshun/hdf5/internal/structures"
 	"github.com/huangzhengshun/hdf5/internal/writer"
 )
+
+// chunkSizeFieldWidth returns the number of bytes needed for the chunk size field
+// based on the chunk size value. HDF5 flags bits 0-1: 0=1byte, 1=2bytes, 2=4bytes, 3=8bytes.
+func chunkSizeFieldWidth(chunkSize uint64) uint64 {
+	switch {
+	case chunkSize <= 255:
+		return 1
+	case chunkSize <= 65535:
+		return 2
+	case chunkSize <= 0xFFFFFFFF:
+		return 4
+	default:
+		return 8
+	}
+}
 
 // createChunkedDataset creates a dataset with chunked storage layout.
 //
@@ -154,19 +169,25 @@ func (fw *FileWriter) createChunkedDataset(name string, dtype Datatype, dims []u
 	// Object header v2 layout:
 	//   - OHDR signature: 4 bytes
 	//   - Version: 1 byte
-	//   - Flags: 1 byte
-	//   - Chunk size: 1 byte (for flags bits 0-1 = 0)
+	//   - Flags: 1 byte (bits 0-1 encode chunk size field width)
+	//   - Chunk size: 1/2/4/8 bytes (based on message data size)
 	//   - Messages (each: type 1 + size 2 + flags 1 + data):
 	//     - Datatype: 4 + len(datatypeData)
 	//     - Dataspace: 4 + len(dataspaceData)
 	//     - Layout header: 4 bytes
 	//     - Layout data: version(1) + class(1) + dimensionality(1) + btreeAddress(offsetSize)
 	// The B-tree address is at offset 3 within layout message data.
+	var messageDataSize uint64
+	for _, msg := range ohw.Messages {
+		messageDataSize += 1 + 2 + 1 + uint64(len(msg.Data))
+	}
+	csWidth := chunkSizeFieldWidth(messageDataSize)
+
 	layoutBTreeOffset := headerAddress +
 		4 + // OHDR
 		1 + // version
 		1 + // flags
-		1 + // chunk size
+		csWidth + // chunk size field (variable width)
 		4 + uint64(len(datatypeData)) + // datatype message
 		4 + uint64(len(dataspaceData)) + // dataspace message
 		4 + // layout message header

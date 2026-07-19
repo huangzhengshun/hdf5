@@ -165,7 +165,12 @@ func (fp *FilterPipeline) EncodePipelineMessage() ([]byte, error) {
 func encodeFilter(f Filter) []byte {
 	flags, cdValues := f.Encode()
 
-	nameLen := uint16(0)
+	name := f.Name()
+	nameLen := uint16(len(name))
+	paddedNameLen := nameLen
+	if paddedNameLen%8 != 0 {
+		paddedNameLen += 8 - (paddedNameLen % 8)
+	}
 
 	cdSize := len(cdValues) * 4
 	paddedCdSize := cdSize
@@ -173,7 +178,7 @@ func encodeFilter(f Filter) []byte {
 		paddedCdSize += 8 - (cdSize % 8)
 	}
 
-	bufSize := 8 + paddedCdSize
+	bufSize := 8 + int(paddedNameLen) + paddedCdSize
 	buf := make([]byte, bufSize)
 
 	binary.LittleEndian.PutUint16(buf[0:2], uint16(f.ID()))
@@ -182,6 +187,11 @@ func encodeFilter(f Filter) []byte {
 	binary.LittleEndian.PutUint16(buf[6:8], uint16(len(cdValues))) //nolint:gosec // G115: HDF5 limits CD values array to uint16
 
 	offset := 8
+
+	if nameLen > 0 {
+		copy(buf[offset:offset+int(nameLen)], name)
+		offset += int(paddedNameLen)
+	}
 
 	for _, val := range cdValues {
 		binary.LittleEndian.PutUint32(buf[offset:], val)
