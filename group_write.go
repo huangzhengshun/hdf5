@@ -1,4 +1,4 @@
-﻿package hdf5
+package hdf5
 
 import (
 	"encoding/binary"
@@ -179,7 +179,7 @@ func (fw *FileWriter) createGroupStructures() (uint64, uint64, uint64, error) {
 	}
 
 	// Write heap
-	if err := heap.WriteTo(fw.writer, heapAddr); err != nil {
+	if err := heap.WriteTo(fw.writer, heapAddr, uint8(offsetSize), uint8(offsetSize)); err != nil { //nolint:gosec // Safe: offsetSize is 8
 		return 0, 0, 0, fmt.Errorf("failed to write local heap: %w", err)
 	}
 
@@ -482,7 +482,7 @@ func (fw *FileWriter) linkToParent(parentPath, childName string, childAddr uint6
 	}
 
 	// Step 6: Write updated heap.
-	if err := heap.WriteTo(fw.writer, heapAddr); err != nil {
+	if err := heap.WriteTo(fw.writer, heapAddr, uint8(offsetSize), uint8(offsetSize)); err != nil { //nolint:gosec // Safe: offsetSize is 8
 		return fmt.Errorf("write heap: %w", err)
 	}
 
@@ -1118,7 +1118,7 @@ func (fw *FileWriter) unlinkFromParent(parentPath, childName string) (uint64, er
 	}
 
 	// Write updated heap.
-	if err := heap.WriteTo(fw.writer, heapAddr); err != nil {
+	if err := heap.WriteTo(fw.writer, heapAddr, offsetSize, offsetSize); err != nil {
 		return 0, fmt.Errorf("write heap: %w", err)
 	}
 

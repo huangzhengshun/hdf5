@@ -134,24 +134,23 @@ func (fp *FilterPipeline) EncodePipelineMessage() ([]byte, error) {
 		return nil, errors.New("empty filter pipeline")
 	}
 
-	// Pipeline message format (version 2):
-	// Bytes 0:    Version (1 byte) = 2
+	// Pipeline message format (version 1):
+	// Bytes 0:    Version (1 byte) = 1
 	// Bytes 1:    Number of filters (1 byte)
 	// Bytes 2-7:  Reserved (6 bytes, must be 0)
 	//
 	// For each filter:
 	//   Filter ID (2 bytes)
-	//   Name length (2 bytes) - may be 0
+	//   Name length (2 bytes)
 	//   Flags (2 bytes)
 	//   Number of CD values (2 bytes)
-	//   Name (variable, padded to 8-byte boundary) - only if name length > 0
-	//   CD values (4 bytes each)
+	//   Name (variable, padded to 8-byte boundary)
+	//   CD values (4 bytes each, padded to 8-byte boundary)
 
-	buf := make([]byte, 0, 8+len(fp.filters)*32) // Pre-allocate for header + filters
+	buf := make([]byte, 0, 8+len(fp.filters)*64)
 	header := make([]byte, 8)
-	header[0] = 2                     // Version 2
+	header[0] = 1                     // Version 1 for h5py compatibility
 	header[1] = byte(len(fp.filters)) //nolint:gosec // G115: filter count bounded by HDF5 format
-	// Reserved bytes 2-7 are already zero
 	buf = append(buf, header...)
 
 	for _, filter := range fp.filters {
@@ -162,23 +161,21 @@ func (fp *FilterPipeline) EncodePipelineMessage() ([]byte, error) {
 	return buf, nil
 }
 
-// encodeFilter encodes a single filter for the pipeline message.
+// encodeFilter encodes a single filter for the pipeline message (version 1 format).
 func encodeFilter(f Filter) []byte {
 	flags, cdValues := f.Encode()
-	name := f.Name()
-	nameLen := uint16(len(name)) //nolint:gosec // G115: Filter names are short (<256), always fit in uint16
 
-	// Calculate padded name length (align to 8-byte boundary)
-	var paddedNameLen uint16
-	if nameLen > 0 {
-		paddedNameLen = ((nameLen + 7) / 8) * 8
+	nameLen := uint16(0)
+
+	cdSize := len(cdValues) * 4
+	paddedCdSize := cdSize
+	if cdSize%8 != 0 {
+		paddedCdSize += 8 - (cdSize % 8)
 	}
 
-	// Calculate buffer size
-	bufSize := 8 + int(paddedNameLen) + len(cdValues)*4
+	bufSize := 8 + paddedCdSize
 	buf := make([]byte, bufSize)
 
-	// Filter header (8 bytes)
 	binary.LittleEndian.PutUint16(buf[0:2], uint16(f.ID()))
 	binary.LittleEndian.PutUint16(buf[2:4], nameLen)
 	binary.LittleEndian.PutUint16(buf[4:6], flags)
@@ -186,13 +183,6 @@ func encodeFilter(f Filter) []byte {
 
 	offset := 8
 
-	// Name (padded to 8-byte boundary)
-	if nameLen > 0 {
-		copy(buf[offset:], name)
-		offset += int(paddedNameLen)
-	}
-
-	// CD values (4 bytes each)
 	for _, val := range cdValues {
 		binary.LittleEndian.PutUint32(buf[offset:], val)
 		offset += 4

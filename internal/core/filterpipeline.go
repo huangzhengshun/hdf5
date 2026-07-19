@@ -70,10 +70,8 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 
 	offset := 2
 
-	// Version 1 has 6 bytes reserved after num filters.
-	if version == 1 {
-		offset += 6
-	}
+	// Both version 1 and 2 have 6 bytes reserved after num filters.
+	offset += 6
 
 	// Parse each filter.
 	for i := uint8(0); i < numFilters; i++ {
@@ -87,12 +85,9 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 		filter.ID = FilterID(binary.LittleEndian.Uint16(data[offset : offset+2]))
 		offset += 2
 
-		// Name length (2 bytes) - for version 1, optional.
-		var nameLength uint16
-		if version == 1 {
-			nameLength = binary.LittleEndian.Uint16(data[offset : offset+2])
-			offset += 2
-		}
+		// Name length (2 bytes) - present in both version 1 and 2.
+		nameLength := binary.LittleEndian.Uint16(data[offset : offset+2])
+		offset += 2
 		filter.NameLength = nameLength
 
 		// Flags (2 bytes).
@@ -103,8 +98,8 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 		filter.NumClientData = binary.LittleEndian.Uint16(data[offset : offset+2])
 		offset += 2
 
-		// Filter name (variable length, only in version 1).
-		if version == 1 && nameLength > 0 {
+		// Filter name (variable length, padded to 8-byte boundary).
+		if nameLength > 0 {
 			// Name is null-terminated and padded to 8-byte boundary.
 			padded := nameLength
 			if padded%8 != 0 {

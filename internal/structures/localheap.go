@@ -1,4 +1,4 @@
-﻿package structures
+package structures
 
 import (
 	"encoding/binary"
@@ -202,19 +202,25 @@ func (h *LocalHeap) AddString(s string) (offset uint64, err error) {
 // Parameters:
 //   - w: Writer to write to (must support WriteAt)
 //   - address: Address where heap header will be written
+//   - offsetSize: Size of offset fields (2, 4, or 8 bytes)
+//   - lengthSize: Size of length fields (2, 4, or 8 bytes)
 //
 // Returns:
 //   - error: If write fails
 //
 // Format written:
-//   - Header (32 bytes): Signature + version + size + free list + data address
-//   - Data segment (at address + 32): Strings with null terminators
+//   - Header: Signature(4) + version(1) + reserved(3) + DataSegmentSize(lengthSize) +
+//     FreeListOffset(lengthSize) + DataSegmentAddress(offsetSize)
+//   - Data segment: Strings with null terminators
 //
-// The data segment address in the header is set to address + 32.
-func (h *LocalHeap) WriteTo(w io.WriterAt, address uint64) error {
-	// Set data segment address (immediately after header)
-	// Header size is 32 bytes for 8-byte addressing (4 + 1 + 3 + 8 + 8 + 8)
-	headerSize := uint64(32)
+// The data segment address in the header is set to address + headerSize.
+func (h *LocalHeap) WriteTo(w io.WriterAt, address uint64, offsetSize, lengthSize uint8) error {
+	// Calculate header size: 8 (fixed) + 2*lengthSize + offsetSize
+	headerSize := uint64(8) + uint64(lengthSize)*2 + uint64(offsetSize)
+	// Round up to 8-byte alignment (HDF5 requirement)
+	if headerSize%8 != 0 {
+		headerSize = ((headerSize / 8) + 1) * 8
+	}
 	h.DataSegmentAddress = address + headerSize
 
 	// Pad strings buffer to full data segment size
@@ -223,7 +229,6 @@ func (h *LocalHeap) WriteTo(w io.WriterAt, address uint64) error {
 		h.strings = append(h.strings, padding...)
 	}
 
-	// Build header (32 bytes)
 	header := make([]byte, headerSize)
 	offset := 0
 
@@ -241,17 +246,38 @@ func (h *LocalHeap) WriteTo(w io.WriterAt, address uint64) error {
 	header[offset+2] = 0
 	offset += 3
 
-	// Data segment size (8 bytes, little-endian)
-	binary.LittleEndian.PutUint64(header[offset:offset+8], h.DataSegmentSize)
-	offset += 8
+	// Data segment size (lengthSize bytes, little-endian)
+	switch lengthSize {
+	case 2:
+		binary.LittleEndian.PutUint16(header[offset:offset+2], uint16(h.DataSegmentSize))
+	case 4:
+		binary.LittleEndian.PutUint32(header[offset:offset+4], uint32(h.DataSegmentSize))
+	case 8:
+		binary.LittleEndian.PutUint64(header[offset:offset+8], h.DataSegmentSize)
+	}
+	offset += int(lengthSize)
 
-	// Offset to head of free list (8 bytes, little-endian)
+	// Offset to head of free list (lengthSize bytes, little-endian)
 	// MVP: Always 1 (H5HL_FREE_NULL = no free list)
-	binary.LittleEndian.PutUint64(header[offset:offset+8], h.OffsetToHeadFreeList)
-	offset += 8
+	switch lengthSize {
+	case 2:
+		binary.LittleEndian.PutUint16(header[offset:offset+2], uint16(h.OffsetToHeadFreeList))
+	case 4:
+		binary.LittleEndian.PutUint32(header[offset:offset+4], uint32(h.OffsetToHeadFreeList))
+	case 8:
+		binary.LittleEndian.PutUint64(header[offset:offset+8], h.OffsetToHeadFreeList)
+	}
+	offset += int(lengthSize)
 
-	// Data segment address (8 bytes, little-endian)
-	binary.LittleEndian.PutUint64(header[offset:offset+8], h.DataSegmentAddress)
+	// Data segment address (offsetSize bytes, little-endian)
+	switch offsetSize {
+	case 2:
+		binary.LittleEndian.PutUint16(header[offset:offset+2], uint16(h.DataSegmentAddress))
+	case 4:
+		binary.LittleEndian.PutUint32(header[offset:offset+4], uint32(h.DataSegmentAddress))
+	case 8:
+		binary.LittleEndian.PutUint64(header[offset:offset+8], h.DataSegmentAddress)
+	}
 
 	// Write header
 	//nolint:gosec // G115: HDF5 addresses fit in int64 for io.WriterAt interface
@@ -310,6 +336,13 @@ func (h *LocalHeap) CopyStringsFrom(src *LocalHeap) error {
 func (h *LocalHeap) PrepareForModification() error {
 	if h.Data == nil {
 		return errors.New("heap has no data to prepare")
+	}
+
+	if len(h.Data) == 0 {
+		h.strings = make([]byte, 1)
+		h.strings[0] = 0
+		h.DataSegmentSize = 4096
+		return nil
 	}
 
 	// Find the actual used size (up to last non-zero byte, PLUS its null terminator)

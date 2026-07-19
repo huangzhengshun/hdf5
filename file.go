@@ -1,4 +1,4 @@
-﻿// Package hdf5 provides a pure Go implementation for reading HDF5 files.
+// Package hdf5 provides a pure Go implementation for reading HDF5 files.
 // It supports HDF5 format versions 0, 2, and 3, with capabilities for
 // reading datasets, groups, attributes, and various data layouts.
 package hdf5
@@ -107,6 +107,9 @@ func (f *File) Root() *Group {
 // Walk traverses the entire file structure, calling fn for each object.
 // Objects are visited in depth-first order starting from the root group.
 func (f *File) Walk(fn func(path string, obj Object)) {
+	if fn == nil {
+		return
+	}
 	walkGroup(f.root, "/", fn)
 }
 

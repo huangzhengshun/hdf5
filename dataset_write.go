@@ -1,4 +1,4 @@
-﻿package hdf5
+package hdf5
 
 import (
 	"encoding/binary"
@@ -2809,7 +2809,7 @@ func createRootGroupStructureV2(fw *writer.FileWriter) (*rootGroupInfo, error) {
 	}
 
 	// Write local heap
-	if err := rootHeap.WriteTo(fw, rootHeapAddr); err != nil {
+	if err := rootHeap.WriteTo(fw, rootHeapAddr, offsetSize, lengthSize); err != nil {
 		return nil, fmt.Errorf("failed to write root heap: %w", err)
 	}
 
@@ -2900,7 +2900,7 @@ func createRootGroupStructureV0(fw *writer.FileWriter) (*rootGroupInfo, error) {
 
 	// 4. Write local heap (after symbol table node).
 	rootHeap := structures.NewLocalHeap(4096)
-	if err := rootHeap.WriteTo(fw, rootHeapAddr); err != nil {
+	if err := rootHeap.WriteTo(fw, rootHeapAddr, offsetSize, lengthSize); err != nil {
 		return nil, fmt.Errorf("failed to write root heap: %w", err)
 	}
 

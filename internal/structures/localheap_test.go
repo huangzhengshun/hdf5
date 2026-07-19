@@ -1,4 +1,4 @@
-﻿package structures
+package structures
 
 import (
 	"encoding/binary"
@@ -742,8 +742,8 @@ func TestLocalHeap_WriteTo(t *testing.T) {
 			buf := make([]byte, 10000)
 			writer := &mockWriter{data: buf}
 
-			// Write heap
-			err := heap.WriteTo(writer, tt.address)
+			// Write heap (8-byte addressing)
+			err := heap.WriteTo(writer, tt.address, 8, 8)
 			require.NoError(t, err)
 
 			// Verify
@@ -794,10 +794,10 @@ func TestLocalHeap_WriteToAndRead(t *testing.T) {
 				offsets[i] = offset
 			}
 
-			// Write to buffer
+			// Write to buffer (8-byte addressing)
 			buf := make([]byte, 10000)
 			writer := &mockWriter{data: buf}
-			err := writeHeap.WriteTo(writer, 0)
+			err := writeHeap.WriteTo(writer, 0, 8, 8)
 			require.NoError(t, err)
 
 			// Read back
@@ -882,4 +882,66 @@ func (m *mockWriter) WriteAt(p []byte, off int64) (n int, err error) {
 	}
 	n = copy(m.data[off:], p)
 	return n, nil
+}
+
+func TestLocalHeap_PrepareForModification_EmptyData(t *testing.T) {
+	heap := &LocalHeap{
+		Data:                 []byte{},
+		DataSegmentSize:      0,
+		OffsetToHeadFreeList: 1,
+	}
+
+	err := heap.PrepareForModification()
+	require.NoError(t, err)
+	require.NotNil(t, heap.strings)
+	require.Equal(t, 1, len(heap.strings))
+	require.Equal(t, byte(0), heap.strings[0])
+	require.GreaterOrEqual(t, heap.DataSegmentSize, uint64(1))
+
+	_, err = heap.AddString("test")
+	require.NoError(t, err)
+}
+
+func TestLocalHeap_WriteTo_AddressingModes(t *testing.T) {
+	tests := []struct {
+		name       string
+		offsetSize uint8
+		lengthSize uint8
+		headerSize uint64
+	}{
+		{"8-byte addressing", 8, 8, 32},
+		{"4-byte addressing", 4, 4, 24},
+		{"2-byte addressing", 2, 2, 16},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			heap := NewLocalHeap(64)
+			_, err := heap.AddString("test")
+			require.NoError(t, err)
+
+			buf := make([]byte, 1000)
+			writer := &mockWriter{data: buf}
+
+			err = heap.WriteTo(writer, 0, tt.offsetSize, tt.lengthSize)
+			require.NoError(t, err)
+
+			require.Equal(t, tt.headerSize, heap.DataSegmentAddress)
+			require.Equal(t, "HEAP", string(buf[0:4]))
+
+			sb := &core.Superblock{
+				OffsetSize: tt.offsetSize,
+				LengthSize: tt.lengthSize,
+				Endianness: binary.LittleEndian,
+			}
+			reader := &mockReaderAt{data: buf}
+			readHeap, err := LoadLocalHeap(reader, 0, sb)
+			require.NoError(t, err)
+			require.NotNil(t, readHeap)
+
+			readStr, err := readHeap.GetString(1)
+			require.NoError(t, err)
+			require.Equal(t, "test", readStr)
+		})
+	}
 }

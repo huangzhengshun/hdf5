@@ -82,11 +82,17 @@ func ReadDatasetFloat64(r io.ReaderAt, header *ObjectHeader, sb *Superblock) ([]
 
 	case layout.IsContiguous():
 		// Data is stored contiguously at specific address.
-		dataSize := totalElements * uint64(datatype.Size)
+		dataSize, err := utils.SafeMultiply(totalElements, uint64(datatype.Size))
+		if err != nil {
+			return nil, fmt.Errorf("dataset size overflow: %w", err)
+		}
+		if err := utils.ValidateBufferSize(dataSize, utils.MaxChunkSize*1024, "dataset"); err != nil {
+			return nil, fmt.Errorf("dataset too large: %w", err)
+		}
 		rawData = make([]byte, dataSize)
 
 		//nolint:gosec // G115: HDF5 addresses fit in int64 for io.ReaderAt interface
-		_, err := r.ReadAt(rawData, int64(layout.DataAddress))
+		_, err = r.ReadAt(rawData, int64(layout.DataAddress))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read contiguous data: %w", err)
 		}
