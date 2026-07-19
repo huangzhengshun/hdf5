@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2025 SciGo HDF5 Library Authors. All rights reserved.
+// Copyright (c) 2025 SciGo HDF5 Library Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be found in the LICENSE file.
 
 package structures
@@ -186,11 +186,10 @@ func TestBTreeV2_UTF8Names(t *testing.T) {
 
 	require.Equal(t, len(names), len(bt.records))
 
-	// Verify hashes are unique (high probability)
-	hashMap := make(map[uint32]bool)
-	for _, record := range bt.records {
-		require.False(t, hashMap[record.NameHash], "Hash collision detected")
-		hashMap[record.NameHash] = true
+	// Verify we can search for records by name
+	for _, name := range names {
+		_, found := bt.SearchRecord(name)
+		require.True(t, found, "Should find record for name: %s", name)
 	}
 }
 

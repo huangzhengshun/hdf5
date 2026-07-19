@@ -98,12 +98,15 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 		filter.NumClientData = binary.LittleEndian.Uint16(data[offset : offset+2])
 		offset += 2
 
-		// Filter name (variable length, padded to 8-byte boundary).
+		// Filter name (variable length).
 		if nameLength > 0 {
-			// Name is null-terminated and padded to 8-byte boundary.
+			// HDF5 spec: Version 1 pads name to 8-byte boundary, Version 2 does NOT.
+			// For version 1, nameLength field stores the padded length (8-byte aligned).
+			// For version 2, nameLength field stores the actual length.
 			padded := nameLength
-			if padded%8 != 0 {
-				padded += 8 - (padded % 8)
+			if version == 1 {
+				// For version 1, nameLength is already padded to 8-byte boundary
+				// as stored in the message
 			}
 
 			if offset+int(padded) > len(data) {
@@ -111,7 +114,7 @@ func ParseFilterPipelineMessage(data []byte) (*FilterPipelineMessage, error) {
 			}
 
 			// Extract name (up to first null).
-			nameBytes := data[offset : offset+int(nameLength)]
+			nameBytes := data[offset : offset+int(padded)]
 			for idx, b := range nameBytes {
 				if b == 0 {
 					filter.Name = string(nameBytes[:idx])

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2025 SciGo HDF5 Library Authors. All rights reserved.
+// Copyright (c) 2025 SciGo HDF5 Library Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be found in the LICENSE file.
 
 package structures
@@ -935,8 +935,9 @@ func jenkinsHash(name string) uint32 {
 	a, b, c := uint32(0xdeadbeef)+uint32(length), uint32(0xdeadbeef)+uint32(length), uint32(0xdeadbeef)+uint32(length) //nolint:gosec // G115: Jenkins hash algorithm, length is string length
 
 	// Process 12-byte chunks
+	// CRITICAL: Use <, not <=. When exactly 12 bytes remain, they are handled by the switch/final below.
 	i := 0
-	for i+12 <= length {
+	for i+12 < length {
 		a += uint32(name[i]) | uint32(name[i+1])<<8 | uint32(name[i+2])<<16 | uint32(name[i+3])<<24
 		b += uint32(name[i+4]) | uint32(name[i+5])<<8 | uint32(name[i+6])<<16 | uint32(name[i+7])<<24
 		c += uint32(name[i+8]) | uint32(name[i+9])<<8 | uint32(name[i+10])<<16 | uint32(name[i+11])<<24

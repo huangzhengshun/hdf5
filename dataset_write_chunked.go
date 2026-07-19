@@ -171,11 +171,7 @@ func (fw *FileWriter) createChunkedDataset(name string, dtype Datatype, dims []u
 	//   - Version: 1 byte
 	//   - Flags: 1 byte (bits 0-1 encode chunk size field width)
 	//   - Chunk size: 1/2/4/8 bytes (based on message data size)
-	//   - Messages (each: type 1 + size 2 + flags 1 + data):
-	//     - Datatype: 4 + len(datatypeData)
-	//     - Dataspace: 4 + len(dataspaceData)
-	//     - Layout header: 4 bytes
-	//     - Layout data: version(1) + class(1) + dimensionality(1) + btreeAddress(offsetSize)
+	//   - Messages (each: type 1 + size 2 + flags 1 + data)
 	// The B-tree address is at offset 3 within layout message data.
 	var messageDataSize uint64
 	for _, msg := range ohw.Messages {
@@ -187,11 +183,15 @@ func (fw *FileWriter) createChunkedDataset(name string, dtype Datatype, dims []u
 		4 + // OHDR
 		1 + // version
 		1 + // flags
-		csWidth + // chunk size field (variable width)
-		4 + uint64(len(datatypeData)) + // datatype message
-		4 + uint64(len(dataspaceData)) + // dataspace message
-		4 + // layout message header
-		3 // offset to btree address within layout data (version + class + dimensionality)
+		csWidth // chunk size field (variable width)
+
+	for _, msg := range ohw.Messages {
+		if msg.Type == core.MsgDataLayout {
+			layoutBTreeOffset += 4 + 3 // layout message header + offset to btree address
+			break
+		}
+		layoutBTreeOffset += 4 + uint64(len(msg.Data)) // message header (4 bytes) + data
+	}
 
 	// 9. Link to parent group
 	parent, datasetName := parsePath(name)

@@ -205,7 +205,7 @@ func TestParseFilterPipelineMessage_Version1WithName(t *testing.T) {
 	offset := 8
 	binary.LittleEndian.PutUint16(data[offset:offset+2], uint16(FilterShuffle))
 	offset += 2
-	binary.LittleEndian.PutUint16(data[offset:offset+2], 10) // name length
+	binary.LittleEndian.PutUint16(data[offset:offset+2], 16) // name length (padded to 16)
 	offset += 2
 	binary.LittleEndian.PutUint16(data[offset:offset+2], 0) // flags
 	offset += 2
@@ -222,6 +222,6 @@ func TestParseFilterPipelineMessage_Version1WithName(t *testing.T) {
 	filter := got.Filters[0]
 	require.Equal(t, FilterShuffle, filter.ID)
 	require.Equal(t, "MyFilter", filter.Name)
-	require.Equal(t, uint16(10), filter.NameLength)
+	require.Equal(t, uint16(16), filter.NameLength)
 	require.Equal(t, []uint32{999}, filter.ClientData)
 }

@@ -182,7 +182,7 @@ func encodeFilter(f Filter) []byte {
 	buf := make([]byte, bufSize)
 
 	binary.LittleEndian.PutUint16(buf[0:2], uint16(f.ID()))
-	binary.LittleEndian.PutUint16(buf[2:4], nameLen)
+	binary.LittleEndian.PutUint16(buf[2:4], paddedNameLen)
 	binary.LittleEndian.PutUint16(buf[4:6], flags)
 	binary.LittleEndian.PutUint16(buf[6:8], uint16(len(cdValues))) //nolint:gosec // G115: HDF5 limits CD values array to uint16
 
