@@ -1,0 +1,336 @@
+﻿package hdf5
+
+import (
+	"encoding/binary"
+	"fmt"
+
+	"github.com/huangzhengshun/hdf5/internal/core"
+	"github.com/huangzhengshun/hdf5/internal/structures"
+	"github.com/huangzhengshun/hdf5/internal/writer"
+)
+
+// createChunkedDataset creates a dataset with chunked storage layout.
+//
+// Implementation steps:
+// 1. Validate chunk dimensions
+// 2. Get datatype info
+// 3. Create chunk coordinator
+// 4. Write empty B-tree (will be populated on Write())
+// 5. Encode messages (datatype, dataspace, chunked layout)
+// 6. Write object header
+// 7. Add link to group
+//
+// For MVP (Phase 1):
+// - No compression (filter pipeline empty)
+// - B-tree v1 for chunk indexing
+// - Single-level B-tree (no splits).
+//
+//nolint:gocognit,gocyclo,cyclop,funlen // Complex by nature: chunked dataset creation involves many steps
+func (fw *FileWriter) createChunkedDataset(name string, dtype Datatype, dims []uint64, config *datasetConfig) (*DatasetWriter, error) {
+	// 1. Validate chunk dimensions
+	if len(config.chunkDims) != len(dims) {
+		return nil, fmt.Errorf("chunk dimensions (%d) must match dataset dimensions (%d)",
+			len(config.chunkDims), len(dims))
+	}
+
+	for i, chunkDim := range config.chunkDims {
+		if chunkDim == 0 {
+			return nil, fmt.Errorf("chunk dimension %d cannot be zero", i)
+		}
+		if chunkDim > dims[i] {
+			return nil, fmt.Errorf("chunk dimension %d (%d) cannot exceed dataset dimension (%d)",
+				i, chunkDim, dims[i])
+		}
+	}
+
+	// 2. Get datatype info
+	dtInfo, err := getDatatypeInfo(dtype, config)
+	if err != nil {
+		return nil, fmt.Errorf("invalid datatype: %w", err)
+	}
+
+	// 3. Create chunk coordinator
+	chunkCoordinator, err := writer.NewChunkCoordinator(dims, config.chunkDims)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create chunk coordinator: %w", err)
+	}
+
+	// 4. B-tree address will be 0 initially (written during Write())
+	// This is standard HDF5 practice for empty chunked datasets
+	btreeAddress := uint64(0)
+
+	// 5. Encode datatype message
+	handler := datatypeRegistry[dtype]
+	datatypeData, err := handler.EncodeDatatypeMessage(dtInfo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode datatype: %w", err)
+	}
+
+	// 6. Create dataspace message
+	dataspaceData, err := core.EncodeDataspaceMessage(dims, config.maxDims)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode dataspace: %w", err)
+	}
+
+	// 7. Create chunked layout message
+	// Per C reference (H5Dchunk.c:909-913), layout stores ndims+1 dimensions
+	// where the last dimension is the datatype element size.
+	layoutData, err := core.EncodeLayoutMessage(
+		core.LayoutChunked,
+		0,            // dataSize not used for chunked
+		btreeAddress, // B-tree address (0 for now)
+		fw.file.sb,
+		config.chunkDims,
+		dtInfo.size, // element size for trailing dimension
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode chunked layout: %w", err)
+	}
+
+	// 8. Setup filter pipeline if configured
+	if config.pipeline != nil || config.enableShuffle {
+		// Create pipeline if needed
+		if config.pipeline == nil {
+			config.pipeline = writer.NewFilterPipeline()
+		}
+
+		// Add shuffle filter at beginning if requested
+		if config.enableShuffle {
+			// Element size from datatype
+			shuffleFilter := writer.NewShuffleFilter(dtInfo.size)
+			config.pipeline.AddFilterAtStart(shuffleFilter)
+		}
+	}
+
+	// 9. Create object header with optional filter pipeline
+	ohw := &core.ObjectHeaderWriter{
+		Version: 2,
+		Flags:   0, // Minimal flags
+		Messages: []core.MessageWriter{
+			{Type: core.MsgDatatype, Data: datatypeData},
+			{Type: core.MsgDataspace, Data: dataspaceData},
+			{Type: core.MsgDataLayout, Data: layoutData},
+		},
+	}
+
+	// Add filter pipeline message if present
+	if config.pipeline != nil && !config.pipeline.IsEmpty() {
+		pipelineData, err := config.pipeline.EncodePipelineMessage()
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode filter pipeline: %w", err)
+		}
+
+		ohw.Messages = append(ohw.Messages, core.MessageWriter{
+			Type: core.MsgFilterPipeline,
+			Data: pipelineData,
+		})
+	}
+
+	// Pre-allocate OHDR with padding for future attributes.
+	ohw.PadToSize(core.MinOHDRAllocSize)
+
+	// Calculate header size
+	headerSize, err := calculateObjectHeaderSize(ohw)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate header size: %w", err)
+	}
+
+	// Allocate and write header
+	headerAddress, err := fw.writer.Allocate(headerSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to allocate header: %w", err)
+	}
+
+	writtenSize, err := ohw.WriteTo(fw.writer, headerAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write header: %w", err)
+	}
+
+	if writtenSize != headerSize {
+		return nil, fmt.Errorf("header size mismatch: expected %d, wrote %d", headerSize, writtenSize)
+	}
+
+	// Calculate offset of B-tree address within the file.
+	// Object header v2 layout:
+	//   - OHDR signature: 4 bytes
+	//   - Version: 1 byte
+	//   - Flags: 1 byte
+	//   - Chunk size: 1 byte (for flags bits 0-1 = 0)
+	//   - Messages (each: type 1 + size 2 + flags 1 + data):
+	//     - Datatype: 4 + len(datatypeData)
+	//     - Dataspace: 4 + len(dataspaceData)
+	//     - Layout header: 4 bytes
+	//     - Layout data: version(1) + class(1) + dimensionality(1) + btreeAddress(offsetSize)
+	// The B-tree address is at offset 3 within layout message data.
+	layoutBTreeOffset := headerAddress +
+		4 + // OHDR
+		1 + // version
+		1 + // flags
+		1 + // chunk size
+		4 + uint64(len(datatypeData)) + // datatype message
+		4 + uint64(len(dataspaceData)) + // dataspace message
+		4 + // layout message header
+		3 // offset to btree address within layout data (version + class + dimensionality)
+
+	// 9. Link to parent group
+	parent, datasetName := parsePath(name)
+	if err := fw.linkToParent(parent, datasetName, headerAddress); err != nil {
+		return nil, fmt.Errorf("failed to link dataset: %w", err)
+	}
+
+	// 10. Create DatasetWriter
+	var dsMsgForWriter *core.DatatypeMessage
+	if dtInfo.baseType != nil {
+		// For array/enum, use base type for data writing
+		dsMsgForWriter = &core.DatatypeMessage{
+			Class:   dtInfo.baseType.class,
+			Version: 1,
+			Size:    dtInfo.baseType.size,
+		}
+	} else {
+		// For simple types, use the datatype itself
+		dsMsgForWriter = &core.DatatypeMessage{
+			Class:   dtInfo.class,
+			Version: 1,
+			Size:    dtInfo.size,
+		}
+	}
+
+	totalElements := calculateTotalElements(dims)
+	dataSize := totalElements * uint64(dtInfo.size)
+
+	return &DatasetWriter{
+		fileWriter:        fw,
+		name:              name,
+		address:           headerAddress,
+		dataAddress:       btreeAddress, // Will be updated on Write()
+		dataSize:          dataSize,
+		dtype:             dsMsgForWriter,
+		dims:              dims,
+		maxDims:           config.maxDims, // Maximum dimensions for resize support
+		isChunked:         true,
+		chunkCoordinator:  chunkCoordinator,
+		chunkDims:         config.chunkDims,
+		pipeline:          config.pipeline, // Filter pipeline
+		layoutBTreeOffset: layoutBTreeOffset,
+		headerSize:        headerSize,
+	}, nil
+}
+
+// writeChunkedData writes data to chunked dataset.
+//
+// Implementation steps:
+// 1. Extract chunks using ChunkCoordinator
+// 2. Write each chunk to file
+// 3. Build B-tree index
+// 4. Write B-tree to file
+// 5. Update object header with B-tree address
+//
+// For MVP (Phase 1):
+// - All chunks written at once (no partial writes)
+// - No compression
+// - Simple B-tree v1.
+//
+//nolint:gocognit,cyclop,gocyclo // Complex by nature: writing chunks + B-tree + updating layout + checksum recompute
+func (dw *DatasetWriter) writeChunkedData(buf []byte) error {
+	if !dw.isChunked {
+		return fmt.Errorf("writeChunkedData called on non-chunked dataset")
+	}
+
+	if uint64(len(buf)) != dw.dataSize {
+		return fmt.Errorf("data size mismatch: expected %d bytes, got %d", dw.dataSize, len(buf))
+	}
+
+	elemSize := dw.dtype.Size
+
+	// 1. Create B-tree writer
+	// Per C reference (H5Dbtree.c:687-690), B-tree keys store byte offsets,
+	// so the writer needs chunk dimensions for the conversion.
+	dimensionality := len(dw.dims)
+	btreeWriter := structures.NewChunkBTreeWriter(dimensionality, dw.chunkDims, elemSize)
+
+	// 2. Process each chunk
+	totalChunks := dw.chunkCoordinator.GetTotalChunks()
+
+	for i := uint64(0); i < totalChunks; i++ {
+		// Get chunk coordinate
+		coord := dw.chunkCoordinator.GetChunkCoordinate(i)
+
+		// Extract chunk data
+		chunkData := dw.chunkCoordinator.ExtractChunkData(buf, coord, elemSize)
+
+		// Apply filters to chunk (if pipeline configured)
+		if dw.pipeline != nil && !dw.pipeline.IsEmpty() {
+			filtered, err := dw.pipeline.Apply(chunkData)
+			if err != nil {
+				return fmt.Errorf("filter application failed for chunk %v: %w", coord, err)
+			}
+			chunkData = filtered
+		}
+
+		// Allocate space for chunk (filtered size may differ from original)
+		chunkAddr, err := dw.fileWriter.writer.Allocate(uint64(len(chunkData)))
+		if err != nil {
+			return fmt.Errorf("failed to allocate chunk %v: %w", coord, err)
+		}
+
+		// Write chunk data (filtered)
+		if err := dw.fileWriter.writer.WriteAtAddress(chunkData, chunkAddr); err != nil {
+			return fmt.Errorf("failed to write chunk %v: %w", coord, err)
+		}
+
+		// Add to B-tree index with chunk size
+		//nolint:gosec // G115: chunk size is validated and fits in uint32
+		if err := btreeWriter.AddChunkWithSize(coord, chunkAddr, uint32(len(chunkData))); err != nil {
+			return fmt.Errorf("failed to add chunk %v to index: %w", coord, err)
+		}
+	}
+
+	// 3. Write B-tree
+	btreeAddr, err := btreeWriter.WriteToFile(dw.fileWriter.writer, dw.fileWriter.writer.Allocator())
+	if err != nil {
+		return fmt.Errorf("failed to write B-tree: %w", err)
+	}
+
+	// 4. Store B-tree address
+	dw.dataAddress = btreeAddr
+
+	// 5. Update the B-tree address in the layout message (in the object header).
+	// This ensures the file can be read correctly after closing.
+	if dw.layoutBTreeOffset > 0 {
+		// Write B-tree address at the calculated offset.
+		// The address is stored as offsetSize bytes (typically 8).
+		offsetSize := dw.fileWriter.file.sb.OffsetSize
+		addrBuf := make([]byte, offsetSize)
+		switch offsetSize {
+		case 8:
+			binary.LittleEndian.PutUint64(addrBuf, btreeAddr)
+		case 4:
+			binary.LittleEndian.PutUint32(addrBuf, uint32(btreeAddr)) //nolint:gosec // G115: Safe - address validated
+		default:
+			return fmt.Errorf("unsupported offset size: %d", offsetSize)
+		}
+		if err := dw.fileWriter.writer.WriteAtAddress(addrBuf, dw.layoutBTreeOffset); err != nil {
+			return fmt.Errorf("failed to update B-tree address in layout message: %w", err)
+		}
+
+		// Recompute V2 object header Jenkins checksum after patching the B-tree address.
+		// The checksum covers all bytes from OHDR signature through messages (excluding
+		// the 4-byte checksum itself). Without this, h5dump rejects the header with
+		// "incorrect metadata checksum after all read attempts".
+		checksumSize := uint64(4)
+		dataLen := dw.headerSize - checksumSize
+		ohdrBuf := make([]byte, dataLen)
+		if _, readErr := dw.fileWriter.writer.Reader().ReadAt(ohdrBuf, int64(dw.address)); readErr != nil { //nolint:gosec // G115: address within file bounds
+			return fmt.Errorf("failed to read object header for checksum: %w", readErr)
+		}
+		newChecksum := core.JenkinsChecksum(ohdrBuf)
+		var csumBuf [4]byte
+		binary.LittleEndian.PutUint32(csumBuf[:], newChecksum)
+		if err := dw.fileWriter.writer.WriteAtAddress(csumBuf[:], dw.address+dataLen); err != nil {
+			return fmt.Errorf("failed to write object header checksum: %w", err)
+		}
+	}
+
+	return nil
+}
