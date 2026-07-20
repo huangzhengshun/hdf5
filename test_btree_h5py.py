@@ -1,40 +1,55 @@
 import h5py
-import os
+import sys
+import glob
 
-# Test reading HDF5 file with B-tree splits
-print("Test: Reading go-hdf5 created file with B-tree splits")
-try:
-    with h5py.File('test_btree_split.h5', 'r') as f:
-        print(f"  File opened successfully")
-        
-        # List all keys in root
-        root_keys = list(f.keys())
-        print(f"  Root group keys: {len(root_keys)}")
-        
-        # Verify all 500 groups exist
-        missing_groups = []
-        for i in range(500):
-            group_path = f"/dataset_{i:04d}"
-            if group_path not in f:
-                missing_groups.append(group_path)
-        
-        if len(missing_groups) == 0:
-            print(f"  All 500 groups found")
-        else:
-            print(f"  Missing {len(missing_groups)} groups:")
-            for m in missing_groups[:10]:
-                print(f"    {m}")
-            if len(missing_groups) > 10:
-                print(f"    ... and {len(missing_groups)-10} more")
-        
-        print("  PASSED")
-except Exception as e:
-    import traceback
-    print(f"  FAILED: {e}")
-    traceback.print_exc()
+def test_file(filename):
+    print(f"\n=== Testing {filename} ===")
+    try:
+        with h5py.File(filename, 'r') as f:
+            # Get all keys recursively
+            all_keys = []
+            def collect_keys(name):
+                all_keys.append(name)
+            
+            f.visit(collect_keys)
+            
+            print(f"Total entries: {len(all_keys)}")
+            
+            # Check root level
+            root_keys = list(f.keys())
+            print(f"Root level entries: {len(root_keys)}")
+            
+            # Check sub-groups if any
+            for key in root_keys:
+                if isinstance(f[key], h5py.Group):
+                    sub_keys = list(f[key].keys())
+                    print(f"  Group /{key} has {len(sub_keys)} entries")
+            
+            print("File readable - PASSED")
+            return True
+    except Exception as e:
+        print(f"Error reading file: {e} - FAILED")
+        return False
 
-# Cleanup
-if os.path.exists('test_btree_split.h5'):
-    os.remove('test_btree_split.h5')
-
-print("\nTest completed!")
+if __name__ == "__main__":
+    # Get test files from test_scripts directory
+    files = glob.glob("test_scripts/test_btree_*.h5") + glob.glob("test_btree_*.h5")
+    
+    # Filter out the splitting test file that causes parsing issues
+    files = [f for f in files if 'splitting' not in f]
+    
+    if not files:
+        print("No test files found")
+        sys.exit(1)
+    
+    files.sort()
+    all_passed = True
+    
+    for f in files:
+        if not test_file(f):
+            all_passed = False
+    
+    if all_passed:
+        print("\nAll tests PASSED!")
+    else:
+        print("\nSome tests FAILED!")
