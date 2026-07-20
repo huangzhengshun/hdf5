@@ -655,8 +655,8 @@ func (fw *FileWriter) buildGroupBTree(entries []btreeEntry, snodAddrs []uint64, 
 			}
 
 			nextLevelAddrs = append(nextLevelAddrs, nodeAddr)
-			if i > 0 && start > 0 {
-				nextLevelEntries = append(nextLevelEntries, btreeEntry{key: currentLevelEntries[start-1].key, childAddr: nodeAddr})
+			if i > 0 && start < len(currentLevelEntries) {
+				nextLevelEntries = append(nextLevelEntries, btreeEntry{key: currentLevelEntries[start].key, childAddr: nodeAddr})
 			} else if i == 0 {
 				nextLevelEntries = append(nextLevelEntries, btreeEntry{key: 0, childAddr: nodeAddr})
 			}
@@ -718,7 +718,6 @@ func readAddrFromBuf(data []byte, size int, endianness binary.ByteOrder) uint64 
 func (fw *FileWriter) updateGroupHeapAddr(parentPath string, newHeapAddr uint64) error {
 	if parentPath == "" || parentPath == "/" {
 		fw.rootHeapAddr = newHeapAddr
-		// Rewrite root group's symbol table message.
 		return fw.rewriteSymbolTableMessage(fw.rootGroupAddr, fw.rootBTreeAddr, fw.rootBTreeAddr, newHeapAddr)
 	}
 	meta, exists := fw.groups[parentPath]
@@ -726,7 +725,7 @@ func (fw *FileWriter) updateGroupHeapAddr(parentPath string, newHeapAddr uint64)
 		return fmt.Errorf("group %q not found", parentPath)
 	}
 	meta.heapAddr = newHeapAddr
-	return nil
+	return fw.rewriteSymbolTableMessage(meta.headerAddr, meta.btreeAddr, meta.btreeAddr, newHeapAddr)
 }
 
 // expandHeapAndAdd expands the local heap (doubles its size) and adds a string.
@@ -765,29 +764,50 @@ func (fw *FileWriter) updateGroupStNodeAddr(parentPath string, newStNodeAddr uin
 // oldBTreeAddr: the old B-tree address to search for
 // newBTreeAddr: the new B-tree address to write
 // newHeapAddr: the new heap address to write
-func (fw *FileWriter) rewriteSymbolTableMessage(headerAddr, oldBTreeAddr, newBTreeAddr, newHeapAddr uint64) error {
+func (fw *FileWriter) rewriteSymbolTableMessage(headerAddr, _, newBTreeAddr, newHeapAddr uint64) error {
 	stMsg := core.EncodeSymbolTableMessage(newBTreeAddr, newHeapAddr, int(fw.file.sb.OffsetSize), int(fw.file.sb.LengthSize))
 
-	headerBuf := make([]byte, 512)
-	//nolint:gosec // G115: HDF5 addresses fit in int64.
-	n, err := fw.writer.ReadAt(headerBuf, int64(headerAddr))
-	if err != nil && n < 32 {
-		return fmt.Errorf("read object header for rewrite: %w", err)
+	header, err := core.ReadObjectHeader(fw.writer, headerAddr, fw.file.sb)
+	if err != nil {
+		return fmt.Errorf("read object header: %w", err)
 	}
 
-	var oldBTreeBytes [8]byte
-	fw.file.sb.Endianness.PutUint64(oldBTreeBytes[:], oldBTreeAddr)
-	for i := 0; i <= n-len(stMsg); i++ {
-		if headerBuf[i] == oldBTreeBytes[0] && i+int(fw.file.sb.OffsetSize) <= n {
-			candidate := readAddrFromBuf(headerBuf[i:], int(fw.file.sb.OffsetSize), fw.file.sb.Endianness)
-			if candidate == oldBTreeAddr {
-				// Found it -- overwrite the full symbol table message data.
-				//nolint:gosec // G115: HDF5 addresses fit in int64.
-				if _, writeErr := fw.writer.WriteAt(stMsg, int64(headerAddr)+int64(i)); writeErr != nil {
-					return fmt.Errorf("rewrite symbol table message: %w", writeErr)
-				}
-				return nil
+	for _, msg := range header.Messages {
+		if msg.Type == core.MsgSymbolTable {
+			msgDataOffset := msg.Offset + 4
+			if _, writeErr := fw.writer.WriteAt(stMsg, int64(msgDataOffset)); writeErr != nil {
+				return fmt.Errorf("rewrite symbol table message: %w", writeErr)
 			}
+
+			var headerAllocSz uint64
+			if headerAddr == fw.rootGroupAddr {
+				headerAllocSz = fw.rootHeaderAllocSz
+			} else {
+				for _, meta := range fw.groups {
+					if meta.headerAddr == headerAddr {
+						headerAllocSz = meta.headerAllocSz
+						break
+					}
+				}
+			}
+			if headerAllocSz == 0 {
+				headerAllocSz = uint64(512)
+			}
+
+			checksumSize := uint64(4)
+			dataLen := headerAllocSz - checksumSize
+			ohdrBuf := make([]byte, dataLen)
+			if _, readErr := fw.writer.ReadAt(ohdrBuf, int64(headerAddr)); readErr != nil {
+				return fmt.Errorf("failed to read object header for checksum: %w", readErr)
+			}
+			newChecksum := core.JenkinsChecksum(ohdrBuf)
+			var csumBuf [4]byte
+			binary.LittleEndian.PutUint32(csumBuf[:], newChecksum)
+			if _, writeErr := fw.writer.WriteAt(csumBuf[:], int64(headerAddr)+int64(dataLen)); writeErr != nil {
+				return fmt.Errorf("failed to write object header checksum: %w", writeErr)
+			}
+
+			return nil
 		}
 	}
 
